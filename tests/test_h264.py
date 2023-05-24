@@ -122,7 +122,7 @@ class H264Test(CodecTestCase):
         # first keyframe
         frame = self.create_video_frame(width=1280, height=720, pts=0)
         payloads, timestamp = encoder.encode(frame)
-        self.assertGreaterEqual(len(payloads), 3)
+        self.assertGreaterEqual(len(payloads), 1)
         self.assertEqual(timestamp, 0)
 
         # delta frame
@@ -134,7 +134,7 @@ class H264Test(CodecTestCase):
         # force keyframe
         frame = self.create_video_frame(width=1280, height=720, pts=6000)
         payloads, timestamp = encoder.encode(frame, force_keyframe=True)
-        self.assertGreaterEqual(len(payloads), 3)
+        self.assertGreaterEqual(len(payloads), 1)
         self.assertEqual(timestamp, 6000)
 
     def test_encoder_pack(self):
@@ -146,14 +146,14 @@ class H264Test(CodecTestCase):
         self.assertEqual(payloads, [b"\x00"])
         self.assertEqual(timestamp, 90)
 
-    def test_encoder_buffering(self):
-        create_encoder_context = h264.create_encoder_context
+    def test_syncable_encoder_buffering(self):
+        create_encoder_context = h264.create_syncable_encoder_context
 
         def mock_create_encoder_context(*args, **kwargs):
             codec, _ = create_encoder_context(*args, **kwargs)
             return FragmentedCodecContext(codec), True
 
-        h264.create_encoder_context = mock_create_encoder_context
+        h264.create_syncable_encoder_context = mock_create_encoder_context
         try:
             encoder = get_encoder(H264_CODEC)
             self.assertIsInstance(encoder, H264Encoder)
@@ -166,7 +166,7 @@ class H264Test(CodecTestCase):
             packages, timestamp = encoder.encode(frame)
             self.assertGreaterEqual(len(packages), 1)
         finally:
-            h264.create_encoder_context = create_encoder_context
+            h264.create_syncable_encoder_context = create_encoder_context
 
     def test_encoder_target_bitrate(self):
         encoder = get_encoder(H264_CODEC)

@@ -347,3 +347,147 @@ class H264Encoder(Encoder):
 def h264_depayload(payload: bytes) -> bytes:
     descriptor, data = H264PayloadDescriptor.parse(payload)
     return data
+
+
+def create_syncable_encoder_context(
+    codec_name: str, width: int, height: int, bitrate: int
+) -> Tuple[av.CodecContext, bool]:
+    logging.info("patched version of create_encoder_context is running")
+
+    MAX_FRAME_RATE = 30
+    codec = av.CodecContext.create(codec_name, "w")
+    codec.width = width
+    codec.height = height
+    codec.bit_rate = bitrate
+    codec.pix_fmt = "yuv420p"
+    codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
+    codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
+    codec.options = {
+        "profile:v": "baseline",
+        "level": "31",
+        "tune": "zerolatency",  # does nothing using h264_omx
+    }
+    codec.open()
+    return codec, codec_name == "h264_v4l2m2m"
+
+
+class MetadataHandler:
+    """Insert cached SPS/PPS data into H264 stream."""
+
+    # This class caches SPS/PPS bytes and inserts them prior to IDR frames
+    # It improves on the initial implementation by skipping the insertion of
+    # metadata in the case where the stream already contains the metadata.
+    # Also, this class injects the SPS/PPS metadata only immediately prior
+    # to an IDR frame. This prevents Mediasoup from forwarding unusable
+    # frames to a new consumer at this beginning of a stream.
+    def __init__(self):
+        self.sps_bytes = None
+        self.pps_bytes = None
+        self.needs_sps = False
+        self.needs_pps = False
+
+    def request_insert(self):
+        self.needs_sps = True
+        self.needs_pps = True
+
+    def maybe_prepend_packets(self, nal_bytes):
+        # Cache SPS/PPS data when it appears in stream...
+        # Reset needs_sps/pps because they are already part of the stream.
+        nal_type = nal_bytes[0] & 0x1F
+        if nal_type == 7:
+            self.sps_bytes = nal_bytes
+            self.needs_sps = False
+        if nal_type == 8:
+            self.pps_bytes = nal_bytes
+            self.needs_pps = False
+
+        # When an IDR frame appears, prepend cached SPS/PPS data, if requested.
+        if nal_type == 5:  # IDR frame
+            if self.needs_sps:
+                self.needs_sps = False
+                if self.sps_bytes is not None:
+                    yield self.sps_bytes
+                else:
+                    logging.warning("IDR frame with no SPS data.")
+            if self.needs_pps:
+                self.needs_pps = False
+                if self.pps_bytes is not None:
+                    yield self.pps_bytes
+                else:
+                    logging.warning("IDR frame with no PPS data.")
+
+
+class H264SyncableEncoder(H264Encoder):
+    """Generate an H264 stream that Mediasoup (our SFU) can sync to."""
+
+    # NOTE: Mediasoup sends a request for a key frame to the
+    # producer (CCD) in response to a new client connection. Then it waits for
+    # an SPS packet before forwarding any video packets to the consumer.
+    # Unfortunately, the hardware encoder on the Pi does not insert an SPS packet
+    # in response to a request for key frame (though it does generate an IDR frame).
+    # We therefore enhance the transcoding here to cache and subsequently insert the
+    # SPS and PPS packets in response to a key frame request
+
+    def __init__(self) -> None:
+        super().__init__()
+        logging.info("Initialized H264SyncableEncoder.")
+        self.metadata = MetadataHandler()
+
+    def _encode_frame(
+        self, frame: av.VideoFrame, force_keyframe: bool
+    ) -> Iterator[bytes]:
+        if self.codec and (
+            frame.width != self.codec.width
+            or frame.height != self.codec.height
+            # we only adjust bitrate if it changes by over 10%
+            or abs(self.target_bitrate - self.codec.bit_rate) / self.codec.bit_rate
+            > 0.1
+        ):
+            self.buffer_data = b""
+            self.buffer_pts = None
+            self.codec = None
+
+        if force_keyframe:
+            # force a complete image
+            frame.pict_type = av.video.frame.PictureType.I
+            self.metadata.request_insert()
+
+        else:
+            # reset the picture type, otherwise no B-frames are produced
+            frame.pict_type = av.video.frame.PictureType.NONE
+
+        if self.codec is None:
+            try:
+                self.codec, self.codec_buffering = create_syncable_encoder_context(
+                    "h264_v4l2m2m",
+                    frame.width,
+                    frame.height,
+                    bitrate=self.target_bitrate,
+                )
+            except Exception:
+                self.codec, self.codec_buffering = create_syncable_encoder_context(
+                    "libx264",
+                    frame.width,
+                    frame.height,
+                    bitrate=self.target_bitrate,
+                )
+
+        data_to_send = b""
+        for package in self.codec.encode(frame):
+            package_bytes = bytes(package)
+            if self.codec_buffering:
+                # delay sending to ensure we accumulate all packages
+                # for a given PTS
+                if package.pts == self.buffer_pts:
+                    self.buffer_data += package_bytes
+                else:
+                    data_to_send += self.buffer_data
+                    self.buffer_data = package_bytes
+                    self.buffer_pts = package.pts
+            else:
+                data_to_send += package_bytes
+
+        if data_to_send:
+            for nal_bytes in self._split_bitstream(data_to_send):
+                yield from self.metadata.maybe_prepend_packets(nal_bytes)
+                yield nal_bytes

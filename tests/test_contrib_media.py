@@ -522,6 +522,31 @@ class MediaPlayerTest(MediaTestCase):
             self.assertEqual(player.video.readyState, "ended")
 
     @asynctest
+    async def test_disabled_video_file_mp4(self):
+        path = self.create_video_file("test.mp4", duration=3)
+        player = self.createMediaPlayer(path)
+
+        if isinstance(self, MediaPlayerNoDecodeTest):
+            self.assertIsNone(player.audio)
+            self.assertIsNone(player.video)
+        else:
+            # check tracks
+            self.assertIsNone(player.audio)
+            self.assertIsNotNone(player.video)
+
+            # tracks should start enabled
+            self.assertTrue(player.video.enabled)
+            player.video.disable()
+            self.assertFalse(player.video.enabled)
+
+            # read all frames but, since recv is just dropping
+            # the input, we should immediately get a MediaStreamError
+            self.assertEqual(player.video.readyState, "live")
+            with self.assertRaises(MediaStreamError):
+                await player.video.recv()
+            self.assertEqual(player.video.readyState, "ended")
+
+    @asynctest
     async def test_audio_and_video_file_mpegts_eagain(self):
         path = self.create_audio_and_video_file("test.ts", duration=3)
         container = BufferingInputContainer(av.open(path, "r"))

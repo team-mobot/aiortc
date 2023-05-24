@@ -231,10 +231,15 @@ class PlayerStreamTrack(MediaStreamTrack):
             raise MediaStreamError
 
         self._player._start(self)
-        data = await self._queue.get()
-        if data is None:
-            self.stop()
-            raise MediaStreamError
+        while True:
+            data = await self._queue.get()
+            if data is None:
+                self.stop()
+                raise MediaStreamError
+            # For disabled track, just drop the data on the floor and loop
+            if self._enabled:
+                break
+
         if isinstance(data, Frame):
             data_time = data.time
         elif isinstance(data, Packet):
