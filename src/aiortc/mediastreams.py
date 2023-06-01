@@ -38,6 +38,7 @@ class MediaStreamTrack(AsyncIOEventEmitter, metaclass=ABCMeta):
     def __init__(self) -> None:
         super().__init__()
         self.__ended = False
+        self._enabled = True
         self._id = str(uuid.uuid4())
 
     @property
@@ -57,6 +58,24 @@ class MediaStreamTrack(AsyncIOEventEmitter, metaclass=ABCMeta):
         Receive the next :class:`~av.audio.frame.AudioFrame`, :class:`~av.video.frame.VideoFrame`
         or :class:`~av.packet.Packet`
         """
+
+    @property
+    def enabled(self) -> bool:
+        """
+        Make tracks "pausable" by silently consuming data from source and not passing it
+        on in the recv method.
+        """
+        return self._enabled
+
+    def enable(self) -> None:
+        if not self._enabled:
+            self._enabled = True
+            self.emit("enabled")
+
+    def disable(self) -> None:
+        if self._enabled:
+            self._enabled = False
+            self.emit("disabled")
 
     def stop(self) -> None:
         if not self.__ended:
