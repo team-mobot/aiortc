@@ -169,6 +169,32 @@ class H264Test(CodecTestCase):
         finally:
             h264.create_encoder_context = create_encoder_context
 
+    # Same as test_encoder_buffering above, just with the SPS/PPS
+    # metadata injector enabled.
+    def test_syncable_encoder_buffering(self):
+        create_encoder_context = h264.create_encoder_context
+
+        def mock_create_encoder_context(*args, **kwargs):
+            codec, _ = create_encoder_context(*args, **kwargs)
+            return FragmentedCodecContext(codec), True
+
+        h264.create_encoder_context = mock_create_encoder_context
+        try:
+            encoder = get_encoder(H264_CODEC)
+            self.assertIsInstance(encoder, H264Encoder)
+            
+            encoder.enableKeyframeMetadataInjection()
+
+            frame = self.create_video_frame(width=640, height=480, pts=0)
+            packages, timestamp = encoder.encode(frame)
+            self.assertEqual(len(packages), 0)
+
+            frame = self.create_video_frame(width=640, height=480, pts=3000)
+            packages, timestamp = encoder.encode(frame)
+            self.assertGreaterEqual(len(packages), 1)
+        finally:
+            h264.create_syncable_encoder_context = create_encoder_context
+
     def test_encoder_target_bitrate(self):
         encoder = get_encoder(H264_CODEC)
         self.assertIsInstance(encoder, H264Encoder)

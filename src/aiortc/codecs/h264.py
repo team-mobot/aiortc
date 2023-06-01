@@ -132,13 +132,75 @@ def create_encoder_context(
     codec.framerate = fractions.Fraction(MAX_FRAME_RATE, 1)
     codec.time_base = fractions.Fraction(1, MAX_FRAME_RATE)
     codec.options = {
-        "profile": "baseline",
+        "profile:v": "baseline",
         "level": "31",
-        "tune": "zerolatency",  # does nothing using h264_omx
+        "tune": "zerolatency",  # does nothing using h264_omx (or h264_v4lm2m?)
     }
     codec.open()
-    return codec, codec_name == "h264_omx"
+    return codec, codec_name == "h264_v4lm2m"
 
+
+class MetadataHandler:
+    """Insert cached SPS/PPS data into H264 stream."""
+
+    # When producing video and streaming to a Mediasoup selective forwarding
+    # unit (SFU), the SFU sends a request for a key frame to the producer
+    # in response to a new client connection which will consume video.
+    # Then it waits for an SPS packet from the producer before forwarding
+    # any other video packets to the consumer.
+    #
+    # Unfortunately, when using h264_v4lm2m to take advantage of a raspberry
+    # pi's hardware accelerated h264 encoding, the hardware encoder does not
+    # insert an SPS packet in response to a request for key frame (though it
+    # does generate an IDR frame). In some cases it can take minutes before
+    # the rpi's encoder will produce a new SPS packet, during which time the
+    # video consumer sees no incoming data.
+    #
+    # We therefore enhance the transcoding via this class to cache and
+    # subsequently inject the SPS and PPS packets immediately prior to any
+    # IDR frame that is emitted without them.
+    #
+    # This prevents Mediasoup from forwarding unusable frames to a new
+    # consumer at this beginning of a stream while ensuring that new
+    # consumers start seeing video in a timely manner.
+    #
+    def __init__(self):
+        self.sps_bytes = None
+        self.pps_bytes = None
+        self.needs_sps = False
+        self.needs_pps = False
+
+    def request_insert(self):
+        self.needs_sps = True
+        self.needs_pps = True
+
+    def maybe_prepend_packets(self, nal_bytes):
+        # Cache SPS/PPS data when it appears in stream...
+        # Reset needs_sps/pps because they are already part of the stream.
+        nal_type = nal_bytes[0] & 0x1F
+        if nal_type == 7:
+            self.sps_bytes = nal_bytes
+            self.needs_sps = False
+        if nal_type == 8:
+            self.pps_bytes = nal_bytes
+            self.needs_pps = False
+
+        # When an IDR frame appears, prepend cached SPS/PPS data, if requested.
+        if nal_type == 5:  # IDR frame
+            if self.needs_sps:
+                self.needs_sps = False
+                if self.sps_bytes is not None:
+                    logging.info("prepending cached SPS bytes to IDR frame")
+                    yield self.sps_bytes
+                else:
+                    logging.warning("IDR frame with no SPS data.")
+            if self.needs_pps:
+                self.needs_pps = False
+                if self.pps_bytes is not None:
+                    logging.info("prepending cached PPS bytes to IDR frame")
+                    yield self.pps_bytes
+                else:
+                    logging.warning("IDR frame with no PPS data.")
 
 class H264Encoder(Encoder):
     def __init__(self) -> None:
@@ -147,6 +209,14 @@ class H264Encoder(Encoder):
         self.codec: Optional[av.CodecContext] = None
         self.codec_buffering = False
         self.__target_bitrate = DEFAULT_BITRATE
+        self.metadata_injector: Optional[MetadataHandler] = MetadataHandler()
+
+    def disableKeyframeMetadataInjection(self) -> None:
+        self.metadata_injector = None
+
+    def enableKeyframeMetadataInjection(self) -> None:
+        if self.metadata_injector is None:
+            self.metadata_injector = MetadataHandler()
 
     @staticmethod
     def _packetize_fu_a(data: bytes) -> List[bytes]:
@@ -281,6 +351,8 @@ class H264Encoder(Encoder):
         if force_keyframe:
             # force a complete image
             frame.pict_type = av.video.frame.PictureType.I
+            if self.metadata_injector is not None:
+                self.metadata_injector.request_insert()
         else:
             # reset the picture type, otherwise no B-frames are produced
             frame.pict_type = av.video.frame.PictureType.NONE
@@ -288,7 +360,7 @@ class H264Encoder(Encoder):
         if self.codec is None:
             try:
                 self.codec, self.codec_buffering = create_encoder_context(
-                    "h264_omx", frame.width, frame.height, bitrate=self.target_bitrate
+                    "h264_v4l2m2m", frame.width, frame.height, bitrate=self.target_bitrate
                 )
             except Exception:
                 self.codec, self.codec_buffering = create_encoder_context(
@@ -314,7 +386,12 @@ class H264Encoder(Encoder):
                 data_to_send += package_bytes
 
         if data_to_send:
-            yield from self._split_bitstream(data_to_send)
+            if self.metadata_injector is None:
+                yield from self._split_bitstream(data_to_send)
+            else:
+                for nal_bytes in self._split_bitstream(data_to_send):
+                    yield from self.metadata_injector.maybe_prepend_packets(nal_bytes)
+                    yield nal_bytes
 
     def encode(
         self, frame: Frame, force_keyframe: bool = False
