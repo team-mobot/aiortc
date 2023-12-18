@@ -6,15 +6,16 @@ import random
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Union, Set
 
 from av.frame import Frame
+from av.packet import Packet
 
 from . import clock
 from .codecs import depayload, get_capabilities, get_decoder, is_rtx
 from .exceptions import InvalidStateError
 from .jitterbuffer import JitterBuffer
-from .mediastreams import MediaStreamError, MediaStreamTrack
+from .mediastreams import MediaStreamError, MediaStreamTrack, VIDEO_TIME_BASE
 from .rate import RemoteBitrateEstimator
 from .rtcdtlstransport import RTCDtlsTransport
 from .rtcrtpparameters import (
@@ -71,6 +72,25 @@ def decoder_worker(loop, input_q, output_q):
 
     if decoder is not None:
         del decoder
+
+
+def passthrough_worker(loop, input_q, output_q):
+    logging.debug(f"PASSTHROUGH WORKER input_q {input_q} output_q {output_q}")
+    while True:
+        task = input_q.get()
+        if task is None:
+            # inform the track that is has ended
+            asyncio.run_coroutine_threadsafe(output_q.put(None), loop)
+            break
+        codec, encoded_frame = task
+
+        # pass the av.packet.Packet through to the track
+        packet = Packet(encoded_frame.data)
+        packet.pts = encoded_frame.timestamp
+        packet.dts = encoded_frame.timestamp
+        packet.time_base = VIDEO_TIME_BASE
+
+        asyncio.run_coroutine_threadsafe(output_q.put(packet), loop)
 
 
 class NackGenerator:
@@ -193,18 +213,18 @@ class RemoteStreamTrack(MediaStreamTrack):
             self._id = id
         self._queue: asyncio.Queue = asyncio.Queue()
 
-    async def recv(self) -> Frame:
+    async def recv(self) -> Union[Frame, Packet]:
         """
         Receive the next frame.
         """
         if self.readyState != "live":
             raise MediaStreamError
 
-        frame = await self._queue.get()
-        if frame is None:
+        frame_or_packet = await self._queue.get()
+        if frame_or_packet is None:
             self.stop()
             raise MediaStreamError
-        return frame
+        return frame_or_packet
 
 
 class TimestampMapper:
@@ -380,15 +400,30 @@ class RTCRtpReceiver:
                     self.__rtx_ssrc[encoding.rtx.ssrc] = encoding.ssrc
 
             # start decoder thread
-            self.__decoder_thread = threading.Thread(
-                target=decoder_worker,
-                name=self.__kind + "-decoder",
-                args=(
-                    asyncio.get_event_loop(),
-                    self.__decoder_queue,
-                    self._track._queue,
-                ),
-            )
+            # TODO/FIXME: how can we specify whether we want to re-encode data
+            # or not? How can we make sure that MediaRecorder can create an
+            # appropriate container for the type of encoded data that will be
+            # incoming?
+            if False:
+                self.__decoder_thread = threading.Thread(
+                    target=decoder_worker,
+                    name=self.__kind + "-decoder",
+                    args=(
+                        asyncio.get_event_loop(),
+                        self.__decoder_queue,
+                        self._track._queue,
+                    ),
+                )
+            else:
+                self.__decoder_thread = threading.Thread(
+                    target=passthrough_worker,
+                    name=self.__kind + "-passthrough-decoder",
+                    args=(
+                        asyncio.get_event_loop(),
+                        self.__decoder_queue,
+                        self._track._queue,
+                    ),
+                )
             self.__decoder_thread.start()
 
             self.__transport._register_rtp_receiver(self, parameters)
