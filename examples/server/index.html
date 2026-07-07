@@ -1,3 +1,4 @@
+<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8"/>
@@ -41,9 +42,13 @@
 <div class="option">
     <input id="use-audio" checked="checked" type="checkbox"/>
     <label for="use-audio">Use audio</label>
+    <select id="audio-input">
+        <option value="" selected>Default device</option>
+    </select>
     <select id="audio-codec">
         <option value="default" selected>Default codecs</option>
         <option value="opus/48000/2">Opus</option>
+        <option value="G722/8000">G722</option>
         <option value="PCMU/8000">PCMU</option>
         <option value="PCMA/8000">PCMA</option>
     </select>
@@ -51,6 +56,9 @@
 <div class="option">
     <input id="use-video" type="checkbox"/>
     <label for="use-video">Use video</label>
+    <select id="video-input">
+        <option value="" selected>Default device</option>
+    </select>
     <select id="video-resolution">
         <option value="" selected>Default resolution</option>
         <option value="320x240">320x240</option>

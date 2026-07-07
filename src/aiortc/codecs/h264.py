@@ -1,13 +1,15 @@
 import fractions
 import logging
 import math
+from collections.abc import Iterable, Iterator, Sequence
 from itertools import tee
 from struct import pack, unpack_from
-from typing import Iterator, List, Optional, Sequence, Tuple, Type, TypeVar
+from typing import Optional, Type, TypeVar, cast
 
 import av
 from av.frame import Frame
 from av.packet import Packet
+from av.video.codeccontext import VideoCodecContext
 
 from ..jitterbuffer import JitterFrame
 from ..mediastreams import VIDEO_TIME_BASE, convert_timebase
@@ -34,21 +36,21 @@ DESCRIPTOR_T = TypeVar("DESCRIPTOR_T", bound="H264PayloadDescriptor")
 T = TypeVar("T")
 
 
-def pairwise(iterable: Sequence[T]) -> Iterator[Tuple[T, T]]:
+def pairwise(iterable: Sequence[T]) -> Iterator[tuple[T, T]]:
     a, b = tee(iterable)
     next(b, None)
     return zip(a, b)
 
 
 class H264PayloadDescriptor:
-    def __init__(self, first_fragment):
+    def __init__(self, first_fragment: bool) -> None:
         self.first_fragment = first_fragment
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"H264PayloadDescriptor(FF={self.first_fragment})"
 
     @classmethod
-    def parse(cls: Type[DESCRIPTOR_T], data: bytes) -> Tuple[DESCRIPTOR_T, bytes]:
+    def parse(cls: Type[DESCRIPTOR_T], data: bytes) -> tuple[DESCRIPTOR_T, bytes]:
         output = bytes()
 
         # NAL unit header
@@ -106,19 +108,17 @@ class H264Decoder(Decoder):
     def __init__(self) -> None:
         self.codec = av.CodecContext.create("h264", "r")
 
-    def decode(self, encoded_frame: JitterFrame) -> List[Frame]:
+    def decode(self, encoded_frame: JitterFrame) -> list[Frame]:
         try:
             packet = av.Packet(encoded_frame.data)
             packet.pts = encoded_frame.timestamp
             packet.time_base = VIDEO_TIME_BASE
-            frames = self.codec.decode(packet)
-        except av.AVError as e:
+            return cast(list[Frame], self.codec.decode(packet))
+        except av.FFmpegError as e:
             logger.warning(
                 "H264Decoder() failed to decode, skipping package: " + str(e)
             )
             return []
-
-        return frames
 
 
 def create_encoder_context(
@@ -136,6 +136,7 @@ def create_encoder_context(
         "level": "31",
         "tune": "zerolatency",  # does nothing using h264_omx (or h264_v4lm2m?)
     }
+    codec.profile = "Baseline"
     codec.open()
     return codec, codec_name == "h264_v4lm2m"
 
@@ -202,12 +203,12 @@ class MetadataHandler:
                 else:
                     logging.warning("IDR frame with no PPS data.")
 
+
 class H264Encoder(Encoder):
     def __init__(self) -> None:
         self.buffer_data = b""
         self.buffer_pts: Optional[int] = None
-        self.codec: Optional[av.CodecContext] = None
-        self.codec_buffering = False
+        self.codec: Optional[VideoCodecContext] = None
         self.__target_bitrate = DEFAULT_BITRATE
         self.metadata_injector: Optional[MetadataHandler] = MetadataHandler()
 
@@ -219,7 +220,7 @@ class H264Encoder(Encoder):
             self.metadata_injector = MetadataHandler()
 
     @staticmethod
-    def _packetize_fu_a(data: bytes) -> List[bytes]:
+    def _packetize_fu_a(data: bytes) -> list[bytes]:
         available_size = PACKET_MAX - FU_A_HEADER_SIZE
         payload_size = len(data) - NAL_HEADER_SIZE
         num_packets = math.ceil(payload_size / available_size)
@@ -260,7 +261,7 @@ class H264Encoder(Encoder):
     @staticmethod
     def _packetize_stap_a(
         data: bytes, packages_iterator: Iterator[bytes]
-    ) -> Tuple[bytes, bytes]:
+    ) -> tuple[bytes, bytes]:
         counter = 0
         available_size = PACKET_MAX - STAP_A_HEADER_SIZE
 
@@ -296,9 +297,10 @@ class H264Encoder(Encoder):
         # Translated from: https://github.com/aizvorski/h264bitstream/blob/master/h264_nal.c#L134
         i = 0
         while True:
-            # Find the start of the NAL unit
-            # NAL Units start with a 3-byte or 4 byte start code of 0x000001 or 0x00000001
-            # while buf[i:i+3] != b'\x00\x00\x01':
+            # Find the start of the NAL unit.
+            #
+            # NAL Units start with the 3-byte start code 0x000001 or
+            # the 4-byte start code 0x00000001.
             i = buf.find(b"\x00\x00\x01", i)
             if i == -1:
                 return
@@ -319,7 +321,7 @@ class H264Encoder(Encoder):
                 yield buf[nal_start:i]
 
     @classmethod
-    def _packetize(cls, packages: Iterator[bytes]) -> List[bytes]:
+    def _packetize(cls, packages: Iterable[bytes]) -> list[bytes]:
         packetized_packages = []
 
         packages_iterator = iter(packages)
@@ -372,18 +374,7 @@ class H264Encoder(Encoder):
 
         data_to_send = b""
         for package in self.codec.encode(frame):
-            package_bytes = bytes(package)
-            if self.codec_buffering:
-                # delay sending to ensure we accumulate all packages
-                # for a given PTS
-                if package.pts == self.buffer_pts:
-                    self.buffer_data += package_bytes
-                else:
-                    data_to_send += self.buffer_data
-                    self.buffer_data = package_bytes
-                    self.buffer_pts = package.pts
-            else:
-                data_to_send += package_bytes
+            data_to_send += bytes(package)
 
         if data_to_send:
             if self.metadata_injector is None:
@@ -395,13 +386,13 @@ class H264Encoder(Encoder):
 
     def encode(
         self, frame: Frame, force_keyframe: bool = False
-    ) -> Tuple[List[bytes], int]:
+    ) -> tuple[list[bytes], int]:
         assert isinstance(frame, av.VideoFrame)
         packages = self._encode_frame(frame, force_keyframe)
         timestamp = convert_timebase(frame.pts, frame.time_base, VIDEO_TIME_BASE)
         return self._packetize(packages), timestamp
 
-    def pack(self, packet: Packet) -> Tuple[List[bytes], int]:
+    def pack(self, packet: Packet) -> tuple[list[bytes], int]:
         assert isinstance(packet, av.Packet)
         packages = self._split_bitstream(bytes(packet))
         timestamp = convert_timebase(packet.pts, packet.time_base, VIDEO_TIME_BASE)

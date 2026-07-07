@@ -5,8 +5,9 @@ import queue
 import random
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Union, Set
+from typing import Callable, Optional, Union
 
 from av.frame import Frame
 from av.packet import Packet
@@ -50,7 +51,9 @@ from .utils import uint16_add, uint16_gt
 logger = logging.getLogger(__name__)
 
 
-def decoder_worker(loop, input_q, output_q):
+def decoder_worker(
+    loop: asyncio.AbstractEventLoop, input_q: queue.Queue, output_q: asyncio.Queue
+) -> None:
     codec_name = None
     decoder = None
 
@@ -96,7 +99,7 @@ def passthrough_worker(loop, input_q, output_q):
 class NackGenerator:
     def __init__(self) -> None:
         self.max_seq: Optional[int] = None
-        self.missing: Set[int] = set()
+        self.missing: set[int] = set()
 
     def add(self, packet: RtpPacket) -> bool:
         """
@@ -283,8 +286,9 @@ class RTCRtpReceiver:
         if transport.state == "closed":
             raise InvalidStateError
 
-        self.__active_ssrc: Dict[int, datetime.datetime] = {}
-        self.__codecs: Dict[int, RTCRtpCodecParameters] = {}
+        self._enabled = True
+        self.__active_ssrc: dict[int, datetime.datetime] = {}
+        self.__codecs: dict[int, RTCRtpCodecParameters] = {}
         self.__decoder_queue: queue.Queue = queue.Queue()
         self.__decoder_thread: Optional[threading.Thread] = None
         self.__kind = kind
@@ -300,16 +304,16 @@ class RTCRtpReceiver:
         self.__rtcp_exited = asyncio.Event()
         self.__rtcp_started = asyncio.Event()
         self.__rtcp_task: Optional[asyncio.Future[None]] = None
-        self.__rtx_ssrc: Dict[int, int] = {}
+        self.__rtx_ssrc: dict[int, int] = {}
         self.__started = False
         self.__stats = RTCStatsReport()
         self.__timestamp_mapper = TimestampMapper()
         self.__transport = transport
 
         # RTCP
-        self.__lsr: Dict[int, int] = {}
-        self.__lsr_time: Dict[int, float] = {}
-        self.__remote_streams: Dict[int, StreamStatistics] = {}
+        self.__lsr: dict[int, int] = {}
+        self.__lsr_time: dict[int, float] = {}
+        self.__remote_streams: dict[int, StreamStatistics] = {}
         self.__rtcp_ssrc: Optional[int] = None
 
         # logging
@@ -335,7 +339,7 @@ class RTCRtpReceiver:
         return self.__transport
 
     @classmethod
-    def getCapabilities(self, kind) -> Optional[RTCRtpCapabilities]:
+    def getCapabilities(self, kind: str) -> Optional[RTCRtpCapabilities]:
         """
         Returns the most optimistic view of the system's capabilities for
         receiving media of the given `kind`.
@@ -372,7 +376,7 @@ class RTCRtpReceiver:
 
         return self.__stats
 
-    def getSynchronizationSources(self) -> List[RTCRtpSynchronizationSource]:
+    def getSynchronizationSources(self) -> list[RTCRtpSynchronizationSource]:
         """
         Returns a :class:`RTCRtpSynchronizationSource` for each unique SSRC identifier
         received in the last 10 seconds.
@@ -485,6 +489,10 @@ class RTCRtpReceiver:
         """
         self.__log_debug("< %s", packet)
 
+        # If the receiver is disabled, discard the packet.
+        if not self._enabled:
+            return
+
         # feed bitrate estimator
         if self.__remote_bitrate_estimator is not None:
             if packet.extensions.abs_send_time is not None:
@@ -527,13 +535,16 @@ class RTCRtpReceiver:
                 self.__log_debug("x RTX packet from unknown SSRC %d", packet.ssrc)
                 return
 
-            if len(packet.payload) < 2:
+            apt = codec.parameters.get("apt")
+            if (
+                len(packet.payload) < 2
+                or not isinstance(apt, int)
+                or apt not in self.__codecs
+            ):
                 return
 
-            codec = self.__codecs[codec.parameters["apt"]]
-            packet = unwrap_rtx(
-                packet, payload_type=codec.payloadType, ssrc=original_ssrc
-            )
+            packet = unwrap_rtx(packet, payload_type=apt, ssrc=original_ssrc)
+            codec = self.__codecs[apt]
 
         # send NACKs for any missing any packets
         if self.__nack_generator is not None and self.__nack_generator.add(packet):
@@ -607,14 +618,14 @@ class RTCRtpReceiver:
         self.__log_debug("- RTCP finished")
         self.__rtcp_exited.set()
 
-    async def _send_rtcp(self, packet) -> None:
+    async def _send_rtcp(self, packet: AnyRtcpPacket) -> None:
         self.__log_debug("> %s", packet)
         try:
             await self.transport._send_rtp(bytes(packet))
         except ConnectionError:
             pass
 
-    async def _send_rtcp_nack(self, media_ssrc: int, lost: List[int]) -> None:
+    async def _send_rtcp_nack(self, media_ssrc: int, lost: list[int]) -> None:
         """
         Send an RTCP packet to report missing RTP packets.
         """

@@ -3,6 +3,108 @@ Changelog
 
 .. currentmodule:: aiortc
 
+1.14.0
+------
+
+ * Allow :class:`~aiortc.contrib.media.MediaRecorder` to record audio and / or
+   video to a WebM container.
+ * Restore support for calling :meth:`RTCPeerConnection.addIceCandidate` before
+   :meth:`RTCPeerConnection.setRemoteDescription`.
+ * Send a keyframe if an RTCP Full Instantaneous Resolution (FIR) feedback is
+   received.
+ * Support parsing SDP `rtcp` attribute without a host.
+ * Use the "modern" SDP form "UDP/DTLS/SCTP" in offers to negotiate data
+   channels.
+ * Relax versioned dependency on PyAV to allow version 15.x and 16.x.
+ * Add support for Python 3.14, drop end-of-life Python 3.9.
+
+1.13.0
+------
+
+ * Add support for `G.722` audio codec.
+ * Handle undecodable VP8 packages as was done prior to release 1.12.0.
+ * Limit the number of threads used for VP8 encoding as was done prior to
+   release 1.12.0.
+ * Allow calling :meth:`RTCPeerConnection.setLocalDescription` with no argument
+   to implicitly create an offer or answer as needed.
+ * Allow calling :meth:`RTCPeerConnection.addIceCandidate` with `None` argument
+   to signal remote end-of-candidates.
+ * Support creating offers without media or data channels.
+ * Reject STUN URLs containing a "transport" query parameter.
+ * Ensure the `webcam` example shuts down cleanly on `KeyboardInterrupt`.
+
+1.12.0
+------
+
+ * Use PyAV to perform Opus + VP8 encoding and decoding. This means `aiortc`
+   is now pure Python.
+ * Allow configuring the media-bundling policy using
+   :attr:`RTCConfiguration.bundlePolicy`.
+ * Fix reversed track negotiated media ID (`mid`) when using multiple
+   transceivers of the same kind.
+ * Fix the :attr:`RTCIceServer.urls` typing to accept `List[str]` in addition
+   to `str`.
+ * Fix octet count and packet count overflow in :class:`RTCRtpSender` when
+   sending RTCP sender reports.
+ * Fix :meth:`RTCPeerConnection.addIceCandidate` when handling candidates
+   with and m-line index and no media ID.
+
+1.11.0
+------
+
+ * Fix decoding of RTX retransmission packets.
+ * Drop support for obsolete `h264_omx` codec.
+ * Require PyAV 14.x to support recent FFmpeg versions.
+ * Require pyee 13.x for better typing support.
+ * Require pyOpenSSL 25.x and fix deprecation warnings.
+
+1.10.1
+------
+
+ * Build wheels for Linux aarch64 again.
+ * Be more cautious when releasing :class:`RTCRtpSender`'s encoder.
+ * Set correct codec for :class:`~aiortc.contrib.media.MediaRecorder` OGG output.
+
+1.10.0
+------
+
+ * Add support for Python 3.13, drop end-of-life Python 3.8.
+ * Stop building wheels for Linux aarch64 for now due to CI instability.
+ * Add `py.typed` to indicate the package has typings, fix some annotations.
+ * Avoid early wraparound of RTP sequences numbers which can break SRTP.
+ * Add support for `sha-384` and `sha-512` DTLS certificate fingerprints.
+ * Allow using PyAV 13.x.
+
+1.9.0
+-----
+
+ * Handle offers with `active` or `passive` DTLS setups.
+ * Stop using the deprecated `audioop` standard library module.
+ * Allow using PyAV 12.x.
+
+1.8.0
+-----
+
+ * Only send / receive RTP according to :attr:`RTCRtpTransceiver.currentDirection`.
+ * Close the :class:`RTCPeerConnection` if all DTLS transports are closed.
+ * Free the encoder as soon as the :class:`RTCRtpSender` stops to save memory.
+ * Modernise JavaScript in `server` and `webcam` examples.
+
+1.7.0
+-----
+
+ * Add support for GCM based SRTP protection profiles.
+ * Reduce supported DTLS cipher list to avoid Client Hello fragmentation.
+ * Fix `utcnow()` deprecation warning on Python 3.12.
+
+1.6.0
+-----
+
+ * Build wheels using `Py_LIMITED_ABI` to make them compatible with future Python versions.
+ * Build wheels using opus 1.4 and vpx 1.13.1.
+ * Use unique IDs for audio and video header extensions.
+ * Allow :class:`~aiortc.contrib.media.MediaRecorder` to record audio from pulse.
+
 1.5.0
 -----
 
@@ -14,18 +116,18 @@ Changelog
 -----
 
  * Build wheels for Python 3.11.
- * Allow :class:`aiortc.contrib.media.MediaPlayer` to send media without transcoding.
- * Allow :class:`aiortc.contrib.media.MediaPlayer` to specify a timeout when opening media.
- * Make :class:`aiortc.RTCSctpTransport` transmit packets sooner to reduce datachannel latency.
- * Refactor :class:`aiortc.RTCDtlsTransport` to use PyOpenSSL.
- * Make :class:`aiortc.RTCPeerConnection` log sent and received SDP when using verbose logging.
+ * Allow :class:`~aiortc.contrib.media.MediaPlayer` to send media without transcoding.
+ * Allow :class:`~aiortc.contrib.media.MediaPlayer` to specify a timeout when opening media.
+ * Make :class:`RTCSctpTransport` transmit packets sooner to reduce datachannel latency.
+ * Refactor :class:`RTCDtlsTransport` to use PyOpenSSL.
+ * Make :class:`RTCPeerConnection` log sent and received SDP when using verbose logging.
 
 1.3.2
 -----
 
  * Limit size of NACK reports to avoid excessive packet size.
  * Improve H.264 codec matching.
- * Determine video size from first frame received by :class:`aiortc.contrib.media.MediaRecorder`.
+ * Determine video size from first frame received by :class:`~aiortc.contrib.media.MediaRecorder`.
  * Fix a deprecation warning when using `av` >= 9.1.0.
  * Tolerate STUN URLs containing a `protocol` querystring argument.
 
@@ -33,7 +135,7 @@ Changelog
 -----
 
  * Build wheels for aarch64 on Linux.
- * Adapt :class:`aiortc.contrib.media.MediaPlayer` for PyAV 9.x.
+ * Adapt :class:`~aiortc.contrib.media.MediaPlayer` for PyAV 9.x.
  * Ensure H.264 produces B-frames by resetting picture type.
 
 1.3.0
@@ -41,8 +143,8 @@ Changelog
 
  * Build wheels for Python 3.10 and for arm64 on Mac.
  * Build wheels against `libvpx` 1.10.
- * Add support for looping in :class:`aiortc.contrib.media.MediaPlayer`.
- * Add unbuffered option to :class:`aiortc.contrib.media.MediaRelay`.
+ * Add support for looping in :class:`~aiortc.contrib.media.MediaPlayer`.
+ * Add unbuffered option to :class:`~aiortc.contrib.media.MediaRelay`.
  * Calculate audio energy and send in RTP header extension.
  * Fix a race condition in RTP sender/receiver shutdown.
  * Improve performance of H.264 bitstream splitting code.
@@ -66,7 +168,7 @@ Changelog
  * Make H.264 encoder honour the bitrate from the bandwidth estimator.
  * Add support for hardware-accelerated H.264 encoding on Raspberry Pi 4 using
    the `h264_omx` codec.
- * Add :class:`aiortc.contrib.media.MediaRelay` class to allow sending media
+ * Add :class:`~aiortc.contrib.media.MediaRelay` class to allow sending media
    tracks to multiple consumers.
 
 1.1.2
@@ -234,13 +336,13 @@ DTLS
 Media
 .....
 
-  * Correctly route REMB packets to the :class:`aiortc.RTCRtpSender`.
+  * Correctly route REMB packets to the :class:`RTCRtpSender`.
 
 Examples
 ........
 
-  * :class:`aiortc.contrib.media.MediaPlayer` : release resources (e.g. webcam) when the player stops.
-  * :class:`aiortc.contrib.signaling.ApprtcSignaling` : make AppRTC signaling available for more examples.
+  * :class:`~aiortc.contrib.media.MediaPlayer` : release resources (e.g. webcam) when the player stops.
+  * :class:`~aiortc.contrib.signaling.ApprtcSignaling` : make AppRTC signaling available for more examples.
   * `datachannel-cli` : make uvloop optional.
   * `videostream-cli` : animate the flag with a wave effect.
   * `webcam` : explicitly set frame rate to 30 fps for webcams.
@@ -261,7 +363,7 @@ Documentation
 Examples
 ........
 
-  * :class:`aiortc.contrib.media.MediaPlayer` : skip frames with no presentation timestamp (pts).
+  * :class:`~aiortc.contrib.media.MediaPlayer` : skip frames with no presentation timestamp (pts).
 
 0.9.19
 ------
@@ -439,7 +541,7 @@ Examples
 ........
 
   * `webcam` : force Chrome to use "unified-plan" semantics to enabled `addTransceiver`.
-  * :class:`aiortc.contrib.media.MediaPlayer` : don't sleep at all when playing from webcam.
+  * :class:`~aiortc.contrib.media.MediaPlayer` : don't sleep at all when playing from webcam.
     This eliminates the constant one-second lag in the `webcam` demo.
 
 0.9.9
@@ -460,13 +562,13 @@ Media
 Examples
 ........
 
-  * `apprtc` : demonstrate the use of :class:`aiortc.contrib.media.MediaPlayer`
-    and :class:`aiortc.contrib.media.MediaRecorder`.
+  * `apprtc` : demonstrate the use of :class:`~aiortc.contrib.media.MediaPlayer`
+    and :class:`~aiortc.contrib.media.MediaRecorder`.
   * `webcam` : new examples illustrating sending video from a webcam to a browser.
-  * :class:`aiortc.contrib.media.MediaPlayer` : don't sleep if a frame lacks timing information.
-  * :class:`aiortc.contrib.media.MediaPlayer` : remove `start()` and `stop()` methods.
-  * :class:`aiortc.contrib.media.MediaRecorder` : use `libx264` for encoding.
-  * :class:`aiortc.contrib.media.MediaRecorder` : make `start()` and `stop()` coroutines.
+  * :class:`~aiortc.contrib.media.MediaPlayer` : don't sleep if a frame lacks timing information.
+  * :class:`~aiortc.contrib.media.MediaPlayer` : remove `start()` and `stop()` methods.
+  * :class:`~aiortc.contrib.media.MediaRecorder` : use `libx264` for encoding.
+  * :class:`~aiortc.contrib.media.MediaRecorder` : make `start()` and `stop()` coroutines.
 
 0.9.8
 -----
@@ -489,9 +591,9 @@ Statistics
 Examples
 ........
 
-  * Add new :class:`aiortc.contrib.media.MediaPlayer` class to read audio / video from a file.
-  * Add new :class:`aiortc.contrib.media.MediaRecorder` class to write audio / video to a file.
-  * Add new :class:`aiortc.contrib.media.MediaBlackhole` class to discard audio / video.
+  * Add new :class:`~aiortc.contrib.media.MediaPlayer` class to read audio / video from a file.
+  * Add new :class:`~aiortc.contrib.media.MediaRecorder` class to write audio / video to a file.
+  * Add new :class:`~aiortc.contrib.media.MediaBlackhole` class to discard audio / video.
 
 0.9.7
 -----
@@ -675,13 +777,13 @@ Peer connection
 Media
 .....
 
-  * Make stop() methods of :class:`aiortc.RTCRtpReceiver`, :class:`aiortc.RTCRtpSender`
+  * Make stop() methods of :class:`RTCRtpReceiver`, :class:`RTCRtpSender`
     and :class:`RTCRtpTransceiver` coroutines to enable clean shutdown.
 
 Data channels
 .............
 
-  * Clean up :class:`aiortc.RTCDataChannel` shutdown sequence.
+  * Clean up :class:`RTCDataChannel` shutdown sequence.
 
   * Support receiving an SCTP `RE-CONFIG` to raise number of inbound streams.
 
@@ -717,11 +819,11 @@ Peer connection
 Data channels
 .............
 
-  * Use SCTP `ABORT` instead of `SHUTDOWN` when stopping :class:`aiortc.RTCSctpTransport`.
+  * Use SCTP `ABORT` instead of `SHUTDOWN` when stopping :class:`RTCSctpTransport`.
 
   * Advertise support for SCTP `RE-CONFIG` extension.
 
-  * Make :class:`aiortc.RTCDataChannel` emit `open` and `close` events.
+  * Make :class:`RTCDataChannel` emit `open` and `close` events.
 
 Examples
 ........

@@ -3,7 +3,7 @@ import fractions
 import time
 import uuid
 from abc import ABCMeta, abstractmethod
-from typing import Tuple, Union
+from typing import Union
 
 from av import AudioFrame, VideoFrame
 from av.frame import Frame
@@ -55,8 +55,8 @@ class MediaStreamTrack(AsyncIOEventEmitter, metaclass=ABCMeta):
     @abstractmethod
     async def recv(self) -> Union[Frame, Packet]:
         """
-        Receive the next :class:`~av.audio.frame.AudioFrame`, :class:`~av.video.frame.VideoFrame`
-        or :class:`~av.packet.Packet`
+        Receive the next :class:`~av.audio.frame.AudioFrame`,
+        :class:`~av.video.frame.VideoFrame` or :class:`~av.packet.Packet`
         """
 
     @property
@@ -137,7 +137,7 @@ class VideoStreamTrack(MediaStreamTrack):
     _start: float
     _timestamp: int
 
-    async def next_timestamp(self) -> Tuple[int, fractions.Fraction]:
+    async def next_timestamp(self) -> tuple[int, fractions.Fraction]:
         if self.readyState != "live":
             raise MediaStreamError
 

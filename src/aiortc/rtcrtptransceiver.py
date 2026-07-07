@@ -1,8 +1,7 @@
 import logging
-from typing import List, Optional
+from typing import Optional
 
 from .codecs import get_capabilities
-from .rtcdtlstransport import RTCDtlsTransport
 from .rtcrtpparameters import (
     RTCRtpCodecCapability,
     RTCRtpCodecParameters,
@@ -29,6 +28,7 @@ class RTCRtpTransceiver:
         sender: RTCRtpSender,
         direction: str = "sendrecv",
     ):
+        self.__currentDirection: Optional[str] = None
         self.__direction = direction
         self.__kind = kind
         self.__mid: Optional[str] = None
@@ -37,15 +37,13 @@ class RTCRtpTransceiver:
         self.__sender = sender
         self.__stopped = False
 
-        self._currentDirection: Optional[str] = None
         self._offerDirection: Optional[str] = None
-        self._preferred_codecs: List[RTCRtpCodecCapability] = []
-        self._transport: RTCDtlsTransport = None
+        self._preferred_codecs: list[RTCRtpCodecCapability] = []
 
         # FIXME: this is only used by RTCPeerConnection
         self._bundled = False
-        self._codecs: List[RTCRtpCodecParameters] = []
-        self._headerExtensions: List[RTCRtpHeaderExtensionParameters] = []
+        self._codecs: list[RTCRtpCodecParameters] = []
+        self._headerExtensions: list[RTCRtpHeaderExtensionParameters] = []
 
     @property
     def currentDirection(self) -> Optional[str]:
@@ -54,13 +52,14 @@ class RTCRtpTransceiver:
 
         One of `'sendrecv'`, `'sendonly'`, `'recvonly'`, `'inactive'` or `None`.
         """
-        return self._currentDirection
+        return self.__currentDirection
 
     @property
     def direction(self) -> str:
         """
         The preferred direction of the transceiver, which will be used in
-        :meth:`RTCPeerConnection.createOffer` and :meth:`RTCPeerConnection.createAnswer`.
+        :meth:`RTCPeerConnection.createOffer` and
+        :meth:`RTCPeerConnection.createAnswer`.
 
         One of `'sendrecv'`, `'sendonly'`, `'recvonly'` or `'inactive'`.
         """
@@ -99,12 +98,12 @@ class RTCRtpTransceiver:
     def stopped(self) -> bool:
         return self.__stopped
 
-    def setCodecPreferences(self, codecs: List[RTCRtpCodecCapability]) -> None:
+    def setCodecPreferences(self, codecs: list[RTCRtpCodecCapability]) -> None:
         """
         Override the default codec preferences.
 
-        See :meth:`RTCRtpSender.getCapabilities` and :meth:`RTCRtpReceiver.getCapabilities`
-        for the supported codecs.
+        See :meth:`RTCRtpSender.getCapabilities` and
+        :meth:`RTCRtpReceiver.getCapabilities` for the supported codecs.
 
         :param codecs: A list of :class:`RTCRtpCodecCapability`, in decreasing order
                         of preference. If empty, restores the default preferences.
@@ -113,7 +112,7 @@ class RTCRtpTransceiver:
             self._preferred_codecs = []
 
         capabilities = get_capabilities(self.kind).codecs
-        unique: List[RTCRtpCodecCapability] = []
+        unique: list[RTCRtpCodecCapability] = []
         for codec in reversed(codecs):
             if codec not in capabilities:
                 raise ValueError("Codec is not in capabilities")
@@ -121,13 +120,29 @@ class RTCRtpTransceiver:
                 unique.insert(0, codec)
         self._preferred_codecs = unique
 
-    async def stop(self):
+    async def stop(self) -> None:
         """
         Permanently stops the :class:`RTCRtpTransceiver`.
         """
         await self.__receiver.stop()
         await self.__sender.stop()
         self.__stopped = True
+
+    def _setCurrentDirection(self, direction: str) -> None:
+        self.__currentDirection = direction
+
+        if direction == "sendrecv":
+            self.__sender._enabled = True
+            self.__receiver._enabled = True
+        elif direction == "sendonly":
+            self.__sender._enabled = True
+            self.__receiver._enabled = False
+        elif direction == "recvonly":
+            self.__sender._enabled = False
+            self.__receiver._enabled = True
+        elif direction == "inactive":
+            self.__sender._enabled = False
+            self.__receiver._enabled = False
 
     def _set_mid(self, mid: str) -> None:
         self.__mid = mid
