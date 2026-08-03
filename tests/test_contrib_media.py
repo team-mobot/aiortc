@@ -1,5 +1,6 @@
 import asyncio
 import errno
+import gc
 import os
 import tempfile
 import time
@@ -521,6 +522,80 @@ class MediaPlayerTest(MediaTestCase):
             with self.assertRaises(MediaStreamError):
                 await player.video.recv()
             self.assertEqual(player.video.readyState, "ended")
+
+    @asynctest
+    async def test_video_file_stop_collects_garbage_before_closing_container(self):
+        """
+        ENG-7714 Mechanism B regression guard.
+
+        MediaPlayer._stop() MUST call gc.collect() before it calls
+        self.__container.close(), not after. A cyclically-referenced
+        av.VideoFrame/av.Packet is only reachable to the interpreter via the
+        cyclic collector (plain refcounting never drops it), and its native
+        release callback assumes the container's underlying device/format
+        context is still alive. If gc.collect() ever moves back to running
+        after close() (or is dropped), any such cyclic frame collected later
+        (e.g. by ccd's own main-loop gc.collect(), on an unrelated stack) can
+        segfault via a use-after-free -- see ENG-7714-findings.md "Mechanism
+        B: resolved" for the confirmed native root cause (a live gdb
+        backtrace on daisy52 showing a crash inside libavdevice's v4l2
+        buffer-release path, called from gc.collect(), against an
+        already-closed device context).
+
+        This test cannot reproduce the segfault itself (it needs a real v4l2
+        device's mmap'd buffer pool, not a plain file-backed container -- see
+        the findings doc for why a local, hardware-free repro doesn't
+        manifest the same native crash). It instead locks in the ORDERING
+        invariant the fix depends on, so a future refactor of _stop() can't
+        silently regress it.
+        """
+        path = self.create_video_file("test.mp4", duration=1)
+        player = self.createMediaPlayer(path)
+
+        if isinstance(self, MediaPlayerNoDecodeTest):
+            self.skipTest("no track to stop in no-decode mode")
+
+        # Start playback so MediaPlayer._stop() takes the "tear everything
+        # down" branch (container is only closed once __started is empty).
+        await player.video.recv()
+
+        # av's container.close() is a read-only C-extension attribute --
+        # it can't be mock.patch'd directly on the class. Instead, swap out
+        # the *reference* MediaPlayer holds (the private __container
+        # attribute is a plain Python instance attribute, freely
+        # reassignable) for a thin recording proxy that forwards close()
+        # to the real container but timestamps when it was called relative
+        # to gc.collect().
+        call_order = []
+        real_container = player._MediaPlayer__container
+        real_gc_collect = gc.collect
+
+        class RecordingContainerProxy:
+            def close(self):
+                call_order.append("container.close")
+                return real_container.close()
+
+            def __getattr__(self, name):
+                return getattr(real_container, name)
+
+        player._MediaPlayer__container = RecordingContainerProxy()
+
+        def recording_gc_collect(*args, **kwargs):
+            call_order.append("gc.collect")
+            return real_gc_collect(*args, **kwargs)
+
+        with patch(
+            "aiortc.contrib.media.gc.collect", side_effect=recording_gc_collect
+        ):
+            player.video.stop()
+
+        self.assertEqual(
+            call_order,
+            ["gc.collect", "container.close"],
+            "MediaPlayer._stop() must run a cyclic-GC pass before closing "
+            "the container (ENG-7714 Mechanism B) -- see the comment in "
+            "MediaPlayer._stop() and ENG-7714-findings.md",
+        )
 
     @asynctest
     async def test_disabled_video_file_mp4(self):

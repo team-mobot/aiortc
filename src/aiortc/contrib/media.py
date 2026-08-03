@@ -1,6 +1,7 @@
 import asyncio
 import errno
 import fractions
+import gc
 import logging
 import threading
 import time
@@ -390,6 +391,48 @@ class MediaPlayer:
             self.__thread = None
 
         if not self.__started and self.__container is not None:
+            # ENG-7714 Mechanism B: force a cyclic-GC pass *before* closing
+            # the container, not after.
+            #
+            # Root cause (confirmed via a native gdb backtrace on daisy52,
+            # 2026-08-03 -- see ENG-7714-findings.md "Mechanism B: resolved"):
+            # av.VideoFrame/av.Packet objects wrap a *direct, unref-counted*
+            # mapping into this container's v4l2 mmap'd buffer pool. When such
+            # an object is only reachable via a Python reference cycle (e.g.
+            # a frame captured in a callback/closure that also transitively
+            # references its own producer), plain refcounting never drops it
+            # -- only the cyclic collector (gc.collect()) does, whenever it
+            # next happens to run. The buffer's native release callback
+            # (libavdevice's v4l2 mmap_release_buffer(), which calls back
+            # into this container's underlying `struct video_data *s` to
+            # VIDIOC_QBUF-requeue the buffer) assumes `s` is still alive.
+            #
+            # `self.__container.close()` below frees that `s` synchronously
+            # (VIDIOC_STREAMOFF + teardown). If any such cyclically-held
+            # frame/packet is still uncollected at that point, its eventual,
+            # unpredictable collection (e.g. from ccd's own explicit
+            # `gc.collect()` call, minutes later, on a totally unrelated
+            # thread/stack) runs mmap_release_buffer() against an
+            # *already-freed* `s` -- a genuine native use-after-free,
+            # confirmed live: the crash's own backtrace showed
+            # `av_free(buf_descriptor)` immediately followed by a crashing
+            # indirect call through a stale function-pointer-shaped field
+            # loaded from `s`, landing in unrelated freed heap memory, not
+            # any loaded code.
+            #
+            # Collecting *before* close() means any such cyclic garbage gets
+            # reclaimed -- and its release callback runs -- while `s` is
+            # still valid, closing the gap. This does not depend on finding
+            # and fixing every possible cycle at the Python level (a moving
+            # target as the encoder/track graph evolves); it guarantees the
+            # native invariant "no buffer-release callback for this
+            # container's buffers runs after this container is torn down"
+            # regardless of which Python object was holding the cycle.
+            gc.collect()
+            logger.info(
+                "ENG-7714 Mechanism B: ran gc.collect() before closing container "
+                f"(container={self.__container.name!r})"
+            )
             self.__container.close()
             self.__container = None
 
