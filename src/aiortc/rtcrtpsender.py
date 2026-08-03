@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import logging
 import random
 import time
@@ -95,6 +96,28 @@ class RTCRtpSender:
         self.__started = False
         self.__stats = RTCStatsReport()
         self.__transport = transport
+
+        # ENG-7714: dedicated single-worker executor for `_next_encoded_frame`'s
+        # blocking `self.__encoder.encode(...)` call (e.g. FFmpeg ->
+        # h264_v4l2m2m -> bcm2835-codec, touching the camera's mmap'd v4l2
+        # buffers). Using our own executor (rather than the loop's shared
+        # default one) lets us keep a direct reference to the raw
+        # `concurrent.futures.Future` -- see `__pending_encoder_future` below
+        # and `_run_rtp`'s cancellation handling for why that reference is
+        # the actual fix, not just bookkeeping.
+        self.__encoder_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="rtcrtpsender-encoder"
+        )
+        # ENG-7714: the RAW (unwrapped) concurrent.futures.Future for the
+        # encoder job currently in flight, or None if no encode is running.
+        # This is deliberately NOT the asyncio-wrapped future that
+        # `_next_encoded_frame` awaits -- asyncio.Future.cancel() on that
+        # wrapper succeeds and unblocks any awaiter immediately regardless
+        # of whether the real background thread (this raw future) has
+        # actually stopped touching camera memory. `_run_rtp` uses THIS
+        # reference to genuinely wait for the thread before releasing the
+        # camera via track.stop().
+        self.__pending_encoder_future: Optional[concurrent.futures.Future] = None
 
         # stats
         self.__lsr: Optional[int] = None
@@ -280,9 +303,20 @@ class RTCRtpSender:
 
             force_keyframe = self.__force_keyframe
             self.__force_keyframe = False
-            payloads, timestamp = await self.__loop.run_in_executor(
-                None, self.__encoder.encode, data, force_keyframe
+            # ENG-7714: submit via our own executor (not loop.run_in_executor,
+            # which only returns an already-wrapped asyncio Future and
+            # discards the raw concurrent.futures.Future) so we can retain
+            # `raw_future` in `__pending_encoder_future` for `_run_rtp` to
+            # genuinely await on cancellation -- see that field's docstring.
+            raw_future = self.__encoder_executor.submit(
+                self.__encoder.encode, data, force_keyframe
             )
+            self.__pending_encoder_future = raw_future
+            payloads, timestamp = await asyncio.wrap_future(raw_future)
+            # Only clear on a clean (non-cancelled) completion -- if this
+            # await raises CancelledError, leave the reference in place so
+            # `_run_rtp`'s handler can see the job may still be running.
+            self.__pending_encoder_future = None
         else:
             payloads, timestamp = self.__encoder.pack(data)
 
@@ -365,6 +399,45 @@ class RTCRtpSender:
             # we *need* to set __rtp_exited, otherwise RTCRtpSender.stop() will hang,
             # so issue a warning if we hit an unexpected exception
             self.__log_warning(traceback.format_exc())
+
+        # ENG-7714: on cancellation (the normal teardown path), the await in
+        # `_next_encoded_frame` unwinds as soon as asyncio marks the wrapper
+        # future cancelled -- which happens immediately, whether or not the
+        # real executor thread running `self.__encoder.encode(...)` has
+        # actually stopped (concurrent.futures.Future.cancel() is a no-op
+        # once the job is already running; the thread keeps executing in the
+        # background). If we called track.stop() -> MediaPlayer._stop() ->
+        # container.close() here without checking, that closes/unmaps the
+        # v4l2 buffers the still-running encoder thread may be reading from
+        # or writing into -- the exact use-after-free race this ticket
+        # fixes. Block on the REAL future (not the asyncio-level
+        # cancellation) before touching the track/camera.
+        #
+        # No timeout here by design: the caller (ccd's
+        # asyncio.wait_for(sendTransport.close(), timeout=...), see
+        # ProtooCloseTimedOut in ccd/protoo.py) already bounds the total
+        # time this can take. If that outer timeout fires while we're
+        # waiting here, IT cancels this await -- which, per the same
+        # asyncio-cancellation-doesn't-stop-a-running-thread gap, returns
+        # immediately without having actually confirmed the thread is done.
+        # That is safe: a timeout at that layer already means "treat this as
+        # unrecoverable, restart the whole process" (ProtooCloseTimedOut ->
+        # SystemExit), so a stale background thread is moot -- the process
+        # (and its address space) is going away regardless.
+        pending = self.__pending_encoder_future
+        if pending is not None and not pending.done():
+            self.__log_warning(
+                "waiting for in-flight encoder executor thread to finish "
+                "before releasing track/camera resources (ENG-7714)"
+            )
+            await asyncio.wrap_future(pending)
+        self.__pending_encoder_future = None
+        # Nothing new can be submitted after this point (the while-loop above
+        # has already exited via the cancellation/exception we just handled),
+        # so it's safe to let the dedicated executor's single worker thread
+        # wind down now rather than leaking it for the lifetime of this
+        # (about-to-be-discarded) RTCRtpSender instance.
+        self.__encoder_executor.shutdown(wait=False)
 
         # stop track
         if self.__track:
